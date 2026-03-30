@@ -4,10 +4,10 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 import json
 
-
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 @dataclass(frozen=True)
 class ProjectConfig:
-    project_root: Path = Path(".")
+    project_root: Path = PROJECT_ROOT
     data_dir: Path = Path("data")
     raw_dir: Path = Path("data/raw")
     metadata_dir: Path = Path("data/metadata")
@@ -36,6 +36,9 @@ class ProjectConfig:
     epochs: int = 20
     learning_rate: float = 0.001
     model_name: str = "butterfly_classifier"
+
+    figures_dir: Path = Path("reports/figures")
+    metrics_dir: Path = Path("reports/metrics")
 
     seed: int = 42
     test_size: float = 0.15
