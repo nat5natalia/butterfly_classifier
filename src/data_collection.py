@@ -64,15 +64,47 @@ def collect_for_taxon(
     taxon_id: int,
     target_count: int,
 ) -> pd.DataFrame:
-
     out_dir = ensure_dir(CFG.raw_dir / species_name)
+
+    # ----- scan existing images -----
+    existing_rows = []
+    for filepath in out_dir.glob("*.jpg"):
+        stem = filepath.stem
+        parts = stem.split('_')
+        if len(parts) >= 3:
+            obs_id = int(parts[-2])
+            photo_id = int(parts[-1])
+        else:
+            # skip files with unexpected name pattern
+            continue
+
+        try:
+            with Image.open(filepath) as img:
+                w, h = img.size
+        except Exception:
+            continue
+
+        existing_rows.append({
+            "filepath": str(filepath.resolve()),
+            "label": species_name,
+            "taxon_id": taxon_id,
+            "observation_id": obs_id,
+            "photo_id": photo_id,
+            "width": w,
+            "height": h,
+        })
+
+    existing_count = len(existing_rows)
+    print(f"{species_name}: already have {existing_count}")
+
+    # If we already have enough, return them
+    if existing_count >= target_count:
+        return pd.DataFrame(existing_rows)
+
     session = requests.Session()
-
-    rows = []
-    downloaded = len(list(out_dir.glob("*.jpg")))
+    rows = existing_rows.copy()
+    downloaded = existing_count
     page = 1
-
-    print(f"{species_name}: already have {downloaded}")
 
     while downloaded < target_count:
         print(f"{species_name}: page {page}")
