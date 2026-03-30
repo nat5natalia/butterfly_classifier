@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import time
 
 import pandas as pd
 import requests
@@ -12,10 +13,9 @@ from src.config import CFG
 from src.utils import ensure_dir
 
 
+# ---------- helpers ----------
+
 def get_best_photo_url(photo: Dict[str, Any]) -> Optional[str]:
-    """
-    Возвращает лучший доступный URL фотографии.
-    """
     for key in ["original_url", "large_url", "medium_url", "small_url", "url"]:
         url = photo.get(key)
         if url:
@@ -25,48 +25,73 @@ def get_best_photo_url(photo: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def download_image(session: requests.Session, url: str, timeout: int = 30) -> Optional[Image.Image]:
-    """
-    Скачивает изображение и проверяет, что его можно открыть через Pillow.
-    """
-    response = session.get(url, timeout=timeout)
-    response.raise_for_status()
-    img = Image.open(BytesIO(response.content)).convert("RGB")
-    return img
+def safe_request(session, url, params=None, retries=5, sleep=2):
+    for attempt in range(retries):
+        try:
+            response = session.get(url, params=params, timeout=30)
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 429:
+                print("Rate limit hit, sleeping...")
+                time.sleep(5)
+            else:
+                print(f"HTTP {response.status_code}, retry...")
+        except Exception as e:
+            print(f"Request error: {e}")
 
+        time.sleep(sleep * (attempt + 1))
+
+    return None
+
+
+def download_image(session, url, retries=3):
+    for attempt in range(retries):
+        try:
+            response = session.get(url, timeout=20)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content)).convert("RGB")
+            return img
+        except Exception:
+            time.sleep(1 + attempt)
+
+    return None
+
+
+# ---------- main logic ----------
 
 def collect_for_taxon(
     species_name: str,
     taxon_id: int,
-    target_count: int = CFG.target_per_class,
-    out_root: Path = CFG.raw_dir,
-    base_url: str = CFG.iNat_base_url,
-    quality_grade: str = CFG.quality_grade,
-    per_page: int = CFG.per_page,
+    target_count: int,
 ) -> pd.DataFrame:
-    """
-    Скачивает изображения для одного вида и возвращает таблицу метаданных.
-    """
-    out_dir = ensure_dir(out_root / species_name)
+
+    out_dir = ensure_dir(CFG.raw_dir / species_name)
     session = requests.Session()
 
-    rows: List[dict] = []
-    downloaded = 0
+    rows = []
+    downloaded = len(list(out_dir.glob("*.jpg")))
     page = 1
 
+    print(f"{species_name}: already have {downloaded}")
+
     while downloaded < target_count:
+        print(f"{species_name}: page {page}")
+
         params = {
             "taxon_id": taxon_id,
-            "quality_grade": quality_grade,
+            "quality_grade": "research",
             "has[]": "photos",
             "page": page,
-            "per_page": per_page,
-            "order_by": "observed_on",
-            "order": "desc",
+            "per_page": 30,
         }
 
-        response = session.get(base_url, params=params, timeout=30)
-        response.raise_for_status()
+        response = safe_request(session, CFG.iNat_base_url, params)
+
+        if response is None:
+            print("Skipping page due to errors")
+            page += 1
+            continue
+
         data = response.json()
         results = data.get("results", [])
 
@@ -82,78 +107,71 @@ def collect_for_taxon(
                 continue
 
             photo = photos[0]
-            photo_url = get_best_photo_url(photo)
-            if not photo_url:
+            url = get_best_photo_url(photo)
+            if not url:
                 continue
 
             obs_id = obs.get("id")
             photo_id = photo.get("id")
-            observed_on = obs.get("observed_on")
-            license_code = photo.get("license_code") or obs.get("license_code")
-            source = obs.get("uri") or "inaturalist"
 
             filename = f"{species_name}_{obs_id}_{photo_id}.jpg"
-            filepath = out_dir / filename
+            path = out_dir / filename
 
-            if filepath.exists():
+            if path.exists():
+                continue
+
+            img = download_image(session, url)
+
+            if img is None:
+                continue
+
+            w, h = img.size
+
+            # фильтр по размеру
+            if w < CFG.min_width or h < CFG.min_height:
                 continue
 
             try:
-                img = download_image(session, photo_url)
-                width, height = img.size
-
-                # сохраняем только валидные изображения
-                img.save(filepath, format="JPEG", quality=95, optimize=True)
-
-                rows.append(
-                    {
-                        "filepath": str(filepath.resolve()),
-                        "label": species_name,
-                        "taxon_id": taxon_id,
-                        "observation_id": obs_id,
-                        "photo_id": photo_id,
-                        "photo_url": photo_url,
-                        "source": source,
-                        "license": license_code,
-                        "width": width,
-                        "height": height,
-                        "observed_on": observed_on,
-                    }
-                )
-
-                downloaded += 1
-
+                img.save(path, "JPEG", quality=90)
             except Exception:
                 continue
 
+            rows.append({
+                "filepath": str(path.resolve()),
+                "label": species_name,
+                "taxon_id": taxon_id,
+                "observation_id": obs_id,
+                "photo_id": photo_id,
+                "width": w,
+                "height": h,
+            })
+
+            downloaded += 1
+
+            if downloaded % 10 == 0:
+                print(f"{species_name}: {downloaded}/{target_count}")
+
+            time.sleep(0.2)
+
         page += 1
+        time.sleep(1)
 
     return pd.DataFrame(rows)
 
 
-def collect_dataset(
-    taxa: Dict[str, int],
-    target_count: int = CFG.target_per_class,
-    metadata_csv: Path = CFG.raw_metadata_csv,
-) -> pd.DataFrame:
-    """
-    Скачивает данные по всем классам и сохраняет raw_metadata.csv.
-    """
+def collect_dataset(taxa: Dict[str, int], target_count: int) -> pd.DataFrame:
     CFG.ensure_dirs()
 
-    all_parts: List[pd.DataFrame] = []
+    all_data = []
 
-    for species_name, taxon_id in taxa.items():
-        print(f"Collecting: {species_name} ({taxon_id})")
-        part = collect_for_taxon(
-            species_name=species_name,
-            taxon_id=taxon_id,
-            target_count=target_count,
-        )
-        all_parts.append(part)
+    for name, taxon_id in taxa.items():
+        df = collect_for_taxon(name, taxon_id, target_count)
+        all_data.append(df)
 
-    df = pd.concat(all_parts, ignore_index=True) if all_parts else pd.DataFrame()
-    metadata_csv.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(metadata_csv, index=False)
+        # пауза между классами
+        time.sleep(3)
 
-    return df
+    final_df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+    final_df.to_csv(CFG.raw_metadata_csv, index=False)
+
+    return final_df

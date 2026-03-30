@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.config import CFG
 from src.data_collection import collect_dataset
-from src.data_cleaning import clean_metadata, save_cleaning_output
+from src.data_cleaning import clean_metadata, save_cleaning_outputs
 
 TAXA = {
     "monarch": 48662,
