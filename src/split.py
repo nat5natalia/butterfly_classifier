@@ -19,6 +19,8 @@ def stratified_group_split(
     that all rows from the same group (e.g., observation_id)
     stay together.
     """
+    if group_col not in df.columns:
+        raise KeyError(f"Column '{group_col}' not found in DataFrame. Available: {list(df.columns)}")
     set_seed(random_state)
 
     # First split: separate test set

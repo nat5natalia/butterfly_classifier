@@ -38,7 +38,10 @@ def main() -> None:
 
     # Train
     history = train_model(model, train_ds, val_ds, callbacks=callbacks)
-
+    import json
+    history_dict = {k: [float(x) for x in v] for k, v in history.history.items()}
+    with open(CFG.metrics_dir / "training_history.json", "w") as f:
+        json.dump(history_dict, f, indent=2)
     # Save final model
     save_model(model, CFG.models_dir / "butterfly_model.keras")
 
