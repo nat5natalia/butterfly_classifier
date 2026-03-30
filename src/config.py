@@ -26,6 +26,17 @@ class ProjectConfig:
     cleaning_report_json: Path = Path("data/cleaned/cleaning_report.json")
     class_map_json: Path = Path("data/splits/class_indices.json")
 
+    train_csv: Path = Path("data/splits/train.csv")
+    val_csv: Path = Path("data/splits/val.csv")
+    test_csv: Path = Path("data/splits/test.csv")
+
+    # Training parameters
+    img_size: tuple[int, int] = (224, 224)
+    batch_size: int = 32
+    epochs: int = 20
+    learning_rate: float = 0.001
+    model_name: str = "butterfly_classifier"
+
     seed: int = 42
     test_size: float = 0.15
     val_size: float = 0.15
